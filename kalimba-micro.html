@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Kalimba Micro</title>
+<style>
+:root{--bg:#f3efe6;--fg:#1d2a2a;--muted:#5d6b6a;--card:#e6e0d2;--accent:#1f6f6b;--on:#c0392b;--on-fg:#fff;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#10191a;--fg:#e8efee;--muted:#9bb0ae;--card:#1a2829;--accent:#5fc2bb;--on:#e0594a;--on-fg:#fff;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#10191a;--fg:#e8efee;--muted:#9bb0ae;--card:#1a2829;--accent:#5fc2bb;--on:#e0594a;--on-fg:#fff;color-scheme:dark}
+*{box-sizing:inherit}
+html,body{margin:0}
+body{background:var(--bg);color:var(--fg);font-family:Georgia,"Times New Roman",serif;min-height:100%;display:flex;justify-content:center}
+main{width:100%;max-width:460px;padding:28px 22px 40px;display:flex;flex-direction:column;align-items:center;gap:26px}
+h1{font-size:2rem;margin:8px 0 0;letter-spacing:.01em}
+p.sub{margin:0;color:var(--muted);text-align:center;line-height:1.5}
+#btn{width:210px;height:210px;border-radius:50%;border:0;background:var(--accent);color:var(--bg);font:700 1.5rem Georgia,serif;cursor:pointer;box-shadow:0 0 0 10px var(--card);transition:background .2s,transform .1s}
+#btn:active{transform:scale(.97)}
+#btn.on{background:var(--on);color:var(--on-fg);box-shadow:0 0 0 10px var(--card),0 0 0 18px color-mix(in srgb,var(--on) 30%,transparent)}
+#btn:focus-visible,input:focus-visible{outline:3px solid var(--fg);outline-offset:4px}
+.panel{width:100%;background:var(--card);border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:18px}
+label{display:flex;flex-direction:column;gap:8px;font-size:1.05rem}
+label span.v{color:var(--muted);font-size:.95rem}
+input[type=range]{width:100%;height:32px;accent-color:var(--accent)}
+.meter{height:10px;background:var(--bg);border-radius:6px;overflow:hidden}
+#lvl{height:100%;width:0;background:var(--accent);transition:width .05s}
+#msg{min-height:1.4em;text-align:center;color:var(--muted);line-height:1.4}
+#msg.err{color:var(--on)}
+</style>
+</head>
+<body>
+<main>
+<h1>Kalimba Micro</h1>
+<p class="sub">Branchez vos écouteurs, appuyez sur le bouton, puis jouez : vous vous entendez en direct.</p>
+<button id="btn" aria-pressed="false">Démarrer</button>
+<div id="msg" role="status"></div>
+<div class="panel">
+<label>Volume<span class="v" id="gv">×2,0</span>
+<input id="gain" type="range" min="0.5" max="6" step="0.1" value="2"></label>
+<label>Réverbération<span class="v" id="rv">20 %</span>
+<input id="rev" type="range" min="0" max="100" step="1" value="20"></label>
+<div>
+<div style="margin-bottom:8px">Niveau du micro</div>
+<div class="meter"><div id="lvl"></div></div>
+</div>
+</div>
+<p class="sub" style="font-size:.9rem">Portez toujours les écouteurs, sinon le haut-parleur provoque un sifflement.</p>
+</main>
+<script>
+(function(){
+var btn=document.getElementById('btn'),msg=document.getElementById('msg');
+var gainEl=document.getElementById('gain'),revEl=document.getElementById('rev');
+var gv=document.getElementById('gv'),rv=document.getElementById('rv'),lvl=document.getElementById('lvl');
+var ctx=null,stream=null,nodes={},running=false,raf=0;
+
+function fmtGain(v){return '×'+Number(v).toFixed(1).replace('.',',');}
+function say(t,err){msg.textContent=t;msg.className=err?'err':'';}
+
+function impulse(c){
+  var len=Math.floor(c.sampleRate*1.6),buf=c.createBuffer(2,len,c.sampleRate);
+  for(var ch=0;ch<2;ch++){var d=buf.getChannelData(ch);
+    for(var i=0;i<len;i++){d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2.6);}}
+  return buf;
+}
+function applyMix(){
+  if(!nodes.wet)return;
+  var r=revEl.value/100;
+  nodes.wet.gain.value=r*0.9;
+  nodes.dry.gain.value=1-r*0.35;
+}
+function applyGain(){if(nodes.gain)nodes.gain.gain.value=parseFloat(gainEl.value);}
+
+gainEl.addEventListener('input',function(){gv.textContent=fmtGain(gainEl.value);applyGain();});
+revEl.addEventListener('input',function(){rv.textContent=revEl.value+' %';applyMix();});
+
+async function start(){
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+    say('Votre navigateur ne permet pas d’utiliser le micro ici.',true);return;
+  }
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false,channelCount:1,latency:0}});
+  }catch(e){
+    say('Micro refusé. Autorisez le micro dans les réglages du navigateur, puis réessayez.',true);return;
+  }
+  var AC=window.AudioContext||window.webkitAudioContext;
+  ctx=new AC({latencyHint:'interactive'});
+  if(ctx.state==='suspended')await ctx.resume();
+  var src=ctx.createMediaStreamSource(stream);
+  var g=ctx.createGain();
+  var dry=ctx.createGain(),wet=ctx.createGain();
+  var conv=ctx.createConvolver();conv.buffer=impulse(ctx);
+  var lim=ctx.createDynamicsCompressor();
+  lim.threshold.value=-8;lim.knee.value=0;lim.ratio.value=20;lim.attack.value=0.003;lim.release.value=0.15;
+  var an=ctx.createAnalyser();an.fftSize=256;
+  src.connect(g);g.connect(dry);g.connect(conv);conv.connect(wet);
+  dry.connect(lim);wet.connect(lim);lim.connect(ctx.destination);
+  g.connect(an);
+  nodes={gain:g,dry:dry,wet:wet,an:an,src:src};
+  applyGain();applyMix();
+  running=true;
+  btn.textContent='Arrêter';btn.classList.add('on');btn.setAttribute('aria-pressed','true');
+  say('Micro actif. Jouez, vous devez vous entendre dans les écouteurs.');
+  var data=new Uint8Array(an.fftSize);
+  (function loop(){
+    if(!running)return;
+    an.getByteTimeDomainData(data);
+    var m=0;for(var i=0;i<data.length;i++){var v=Math.abs(data[i]-128)/128;if(v>m)m=v;}
+    lvl.style.width=Math.min(100,m*100)+'%';
+    raf=requestAnimationFrame(loop);
+  })();
+}
+function stop(){
+  running=false;cancelAnimationFrame(raf);
+  if(stream){stream.getTracks().forEach(function(t){t.stop();});stream=null;}
+  if(ctx){ctx.close();ctx=null;}
+  nodes={};lvl.style.width='0';
+  btn.textContent='Démarrer';btn.classList.remove('on');btn.setAttribute('aria-pressed','false');
+  say('Micro arrêté.');
+}
+btn.addEventListener('click',function(){if(running)stop();else start();});
+document.addEventListener('visibilitychange',function(){if(ctx&&ctx.state==='suspended'&&running)ctx.resume();});
+})();
+</script>
+</body>
+</html>
